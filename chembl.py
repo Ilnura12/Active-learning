@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[148]:
+# In[3]:
 
 
 import pandas as pd
@@ -14,16 +14,17 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.model_selection import train_test_split
 import numpy as np
 from tqdm import tqdm
+import random
 from collections import defaultdict
+import pickle
 
 
-# In[14]:
+# In[ ]:
 
 
-def model(file):
+def descriptors(file):
     data = pd.read_csv(f'datasets/{file}', names=['smiles', 'chembl_id', 'pKi'])     
-    data['activity'] = np.where(data.pKi > 7, 1, 0)
-
+    data['activity'] = np.where(data.pKi >= 7, 1, 0)
     mols = [Chem.MolFromSmiles(str(m)) for m in data['smiles']]
     fps = [AllChem.GetMorganFingerprintAsBitVect(m,2,nBits=1024) for m in mols]
     np_fps = []
@@ -32,12 +33,19 @@ def model(file):
         arr = np.zeros((1,))
         DataStructs.ConvertToNumpyArray(fp,arr)
         np_fps.append(arr)
+    np_fps = pd.DataFrame(np_fps)
+    
+    return data, np_fps
 
-    # pKi = data['pKi'].values.tolist()
-    activity = data['activity'].values.tolist()
+
+# In[133]:
+
+
+def model(file):
+    data, np_fps = descriptors(file)
 
     # x_train_external, x_test_external, y_r_train_external, y_r_test_external = train_test_split(np_fps, pKi, test_size=0.2, random_state=42)
-    x_train_external, x_test_external, y_c_train_external, y_c_test_external = train_test_split(np_fps, activity, test_size=0.2, random_state=42)
+    x_train_external, x_test_external, y_c_train_external, y_c_test_external = train_test_split(fps, data['activity'].values.tolist(), test_size=0.2, random_state=42)
 
     rfc = RandomForestClassifier(random_state=42, n_estimators=500, max_features='log2', n_jobs=20)
     # rfr = RandomForestRegressor(random_state=1, n_estimators=500, max_features='log2', n_jobs=20)
@@ -45,24 +53,27 @@ def model(file):
     rfc.fit(x_train_external, y_c_train_external)
     y_c_pred = rfc.predict(x_test_external)
     ba = balanced_accuracy_score(y_c_test_external, y_c_pred)
+    proba = rfc.predict_proba(x_test_external)
+    fpr, tpr, _ = roc_curve(y_c_test_external, [x[1] for x in proba])
+    AUC = auc(fpr, tpr)
 
     # rfr.fit(x_train_external, y_r_train_external)
     # y_r_pred = rfc.predict(x_test_external)
     # r2 = r2_score(y_r_test_external, y_r_pred)
     # rmse = mean_squared_error(y_r_test_external, y_r_pred, squared=False)
     #return ba, r2, rmse
-    return ba
+    return ba, AUC
 
 
-# In[15]:
+# In[24]:
 
 
-results = []
+results = dict()
 #datasets = os.listdir('/home/ilnura/active learning/datasets')
 for element in tqdm(os.listdir('/home/ilnura/active learning/datasets')):
     # result = list(model(element))
     # result.append(element)
-    results.append([element, model(element)])
+    results[element] = model(element)
 
 
 # In[17]:
@@ -105,98 +116,115 @@ for dataset in datasets_ordred_by_quality_decrease:
             pass
 
 
-# In[47]:
+# In[15]:
+
+
+with open ('best_ba.pickle', 'rb') as f:
+    best_ba = pickle.load(f)
+with open ('worst_ba.pickle', 'rb') as f:
+    worst_ba = pickle.load(f)
+
+
+# In[60]:
 
 
 def data_preparation(file):
-    data = pd.read_csv(f'datasets/{file}', names=['smiles', 'chembl_id', 'pKi'])     
-    data['activity'] = np.where(data.pKi > 7, 1, 0)
-
-    mols = [Chem.MolFromSmiles(str(m)) for m in data['smiles']]
-    fps = [AllChem.GetMorganFingerprintAsBitVect(m,2,nBits=1024) for m in mols]
-    np_fps = []
-
-    for fp in fps:
-        arr = np.zeros((1,))
-        DataStructs.ConvertToNumpyArray(fp,arr)
-        np_fps.append(arr)
-
-
-    activity = data['activity'].values.tolist()
-    x_train_external, x_test_external, y_train_external, y_test_external = train_test_split(np_fps, activity, test_size=0.2, random_state=42)
+    data, np_fps = descriptors(file)
+    
+    x_train_external, x_test_external, y_train_external, y_test_external = train_test_split(np_fps, pd.DataFrame(data['activity']), test_size=0.2)
     x_train_internal, x_test_internal, y_train_internal, y_test_internal = train_test_split(x_train_external, y_train_external,
-                                                                                                test_size=len(y_train_external)-10, random_state=2, stratify=y_train_external)
-    
-    return x_train_internal, x_test_internal, y_train_internal, y_test_internal, x_test_external, y_test_external
-
-
-# In[154]:
-
-
-def active_learning(x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex, method):
-    results = []
-    number_of_iterations = len(x_test_in)//5
-    while len(results) < number_of_iterations:
-        rfc = RandomForestClassifier(random_state=42, n_estimators=500, max_features='log2', n_jobs=20)
-        rfc.fit(x_train_in, y_train_in)
-        probs = rfc.predict_proba(x_test_in)
-
-        probs_difference = []
-        prob_of_label_1 = []
-        for n, prob in enumerate(probs):
-            probs_difference.append([n, abs(prob[0]-prob[1])])
-            prob_of_label_1.append([n, prob[1]])
-        least_sure = [x[0] for x in sorted(probs_difference, key = lambda x: x[1], reverse=False)][:5]
-        least_sure.sort(reverse=True)
-        most_sure = [x[0] for x in sorted(prob_of_label_1, key = lambda x: x[1], reverse=True)][:5]
-        most_sure.sort(reverse=True)
- 
-        pred = rfc.predict(x_test_ex)
-        ba = balanced_accuracy_score(y_test_ex, pred)
-        fpr, tpr, _ = roc_curve(y_test_ex, pred)
-        AUC = auc(fpr, tpr)
-        results.append([len(y_train_in),ba, AUC])
-        
-        if method == 'exploration':
-            adding_points = least_sure
-        else:
-            adding_points = most_sure
-            
-        for point in adding_points:
-            x_train_in.append(x_test_in[point])
-            y_train_in.append(y_test_in[point])
-            del x_test_in[point]
-            del y_test_in[point]
-        # print(results[-1])    
-        
-    return results
-
-
-# In[135]:
-
-
-#results_for_best = defaultdict(dict)
-for dataset in tqdm(best_ba[1:]):
-    x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex = data_preparation(dataset) 
-    results_for_best[dataset]['exploration'] = active_learning(x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex,'exploration')
-    x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex = data_preparation(dataset) 
-    results_for_best[dataset]['exploitation'] = active_learning(x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex,'exploitation')
-    
+                                                                                                test_size=len(y_train_external)-10)
+    pkis = dict()
+    for index in x_test_internal.index:
+        pkis[index] = data.iloc[index]['pKi']
+    max_pki_index = max(pkis, key=pkis.get)
+    return x_train_internal, x_test_internal, y_train_internal, y_test_internal, x_test_external, y_test_external, max_pki_index
 
 
 # In[147]:
 
 
-results_for_worst = defaultdict(dict)
-for dataset in tqdm(worst_ba):
-    x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex = data_preparation(dataset)
-    results_for_worst[dataset]['exploration'] = active_learning(x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex,'exploration')
-    x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex = data_preparation(dataset)
-    results_for_worst[dataset]['exploitation'] = active_learning(x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex,'exploitation')
+def active_learning(x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex, max_pki_index, method):
+    results = []
+    number_of_iterations = len(x_test_in)//5
+    while len(results) < number_of_iterations:
+        rfc = RandomForestClassifier(random_state=42, n_estimators=500, max_features='log2', n_jobs=20)
+        rfc.fit(x_train_in.loc[:, ].to_numpy(), y_train_in['activity'].values.tolist())
+        classes = set(y_train_in['activity'].values.tolist())
+        
+        probs = rfc.predict_proba(x_test_in.loc[:, ].to_numpy())
+        probs_difference, prob_of_label_1 = [], []
+        for n, prob in enumerate(probs):
+            try:
+                probs_difference.append([x_test_in.index[n], abs(prob[0]-prob[1])])
+                prob_of_label_1.append([x_test_in.index[n], prob[1]])
+            except IndexError:
+                probs_difference.append([x_test_in.index[n], 1])
+                if 1 in classes:
+                    prob_of_label_1.append([x_test_in.index[n], 1]) 
+                else:
+                    prob_of_label_1.append([x_test_in.index[n], 0])
+                
+        least_sure = [x[0] for x in sorted(probs_difference, key=lambda x: x[1], reverse=False)][:5]
+        most_sure = [x[0] for x in sorted(prob_of_label_1, key=lambda x: x[1], reverse=True)][:5]
+
+        pred = rfc.predict(x_test_ex.loc[:, ].to_numpy())
+        proba = rfc.predict_proba(x_test_ex.loc[:, ].to_numpy())
+        if len(classes) == 1:
+            if 1 in classes:
+                proba = np.insert(proba, 0, 0, axis = 1)
+            else:
+                proba = np.insert(proba, 1, 0, axis = 1)
+        ba = balanced_accuracy_score(y_test_ex.values.tolist(), pred)
+        fpr, tpr, _ = roc_curve(y_test_ex.loc[:, ].to_numpy(), [x[1] for x in proba])
+        AUC = auc(fpr, tpr)
+        results.append([(len(y_train_in)-10)//5, ba, AUC])
+
+        if method == 'exploration':
+            adding_points = least_sure
+        elif method == 'exploitation':
+            adding_points = most_sure
+        else:
+            adding_points = random.sample(list(x_test_in.index), 5)
+
+        if max_pki_index in adding_points:
+            iteration_of_max_pki = (len(y_train_in)-10)//5
+        # else:
+        #     iteration_of_max_pki = 'not found'
+
+        for point in adding_points:
+            x_train_in, y_train_in = x_train_in.append(x_test_in.loc[point]), y_train_in.append(y_test_in.loc[point])
+            x_test_in, y_test_in = x_test_in.drop(point), y_test_in.drop(point)
+        #print(results[-1])
+
+    return results, iteration_of_max_pki
+
+
+# In[113]:
+
+
+results_for_best = defaultdict(dict)
+for dataset in tqdm(best_ba):
+    for method in tqdm(['exploration', 'exploitation', 'random']):
+        result_for_iteration = []
+        for i in tqdm(range(10)):
+            x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex, max_pki_index = data_preparation(dataset) 
+            result_for_iteration.append(active_learning(x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex, max_pki_index, method))
+        results_for_best[dataset][method] = result_for_iteration
+    with open ('results_for_best.pickle', 'wb') as f:
+        pickle.dump(results_for_best, f)
 
 
 # In[ ]:
 
 
-
-
+#results_for_worst = defaultdict(dict)
+for dataset in tqdm(worst_ba):
+    for method in tqdm(['exploration', 'exploitation', 'random']):
+        result_for_iteration = []
+        for i in tqdm(range(10)):
+            x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex, max_pki_index = data_preparation(dataset) 
+            result_for_iteration.append(active_learning(x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex, max_pki_index, method))
+        results_for_worst[dataset][method] = result_for_iteration
+    with open ('results_for_worst.pickle', 'wb') as f:
+        pickle.dump(results_for_worst, f)
