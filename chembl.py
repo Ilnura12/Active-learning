@@ -19,7 +19,7 @@ from collections import defaultdict
 import pickle
 
 
-# In[ ]:
+# In[153]:
 
 
 def descriptors(file):
@@ -44,11 +44,9 @@ def descriptors(file):
 def model(file):
     data, np_fps = descriptors(file)
 
-    # x_train_external, x_test_external, y_r_train_external, y_r_test_external = train_test_split(np_fps, pKi, test_size=0.2, random_state=42)
     x_train_external, x_test_external, y_c_train_external, y_c_test_external = train_test_split(fps, data['activity'].values.tolist(), test_size=0.2, random_state=42)
 
     rfc = RandomForestClassifier(random_state=42, n_estimators=500, max_features='log2', n_jobs=20)
-    # rfr = RandomForestRegressor(random_state=1, n_estimators=500, max_features='log2', n_jobs=20)
 
     rfc.fit(x_train_external, y_c_train_external)
     y_c_pred = rfc.predict(x_test_external)
@@ -57,11 +55,6 @@ def model(file):
     fpr, tpr, _ = roc_curve(y_c_test_external, [x[1] for x in proba])
     AUC = auc(fpr, tpr)
 
-    # rfr.fit(x_train_external, y_r_train_external)
-    # y_r_pred = rfc.predict(x_test_external)
-    # r2 = r2_score(y_r_test_external, y_r_pred)
-    # rmse = mean_squared_error(y_r_test_external, y_r_pred, squared=False)
-    #return ba, r2, rmse
     return ba, AUC
 
 
@@ -69,10 +62,7 @@ def model(file):
 
 
 results = dict()
-#datasets = os.listdir('/home/ilnura/active learning/datasets')
 for element in tqdm(os.listdir('/home/ilnura/active learning/datasets')):
-    # result = list(model(element))
-    # result.append(element)
     results[element] = model(element)
 
 
@@ -80,8 +70,7 @@ for element in tqdm(os.listdir('/home/ilnura/active learning/datasets')):
 
 
 df = pd.DataFrame(results)
-# df.columns = ['ba', 'r2', 'rmse', 'datasdatasets/
-df.columns = ['dataset', 'ba']
+df.columns = ['dataset', 'ba', 'auc']
 datasets_ordred_by_quality_increase = list(df.sort_values(by=['ba'], ascending=False)['dataset'])
 datasets_ordred_by_quality_decrease = list(df.sort_values(by=['ba'], ascending=True)['dataset'])
 
@@ -125,7 +114,7 @@ with open ('worst_ba.pickle', 'rb') as f:
     worst_ba = pickle.load(f)
 
 
-# In[60]:
+# In[165]:
 
 
 def data_preparation(file):
@@ -138,7 +127,7 @@ def data_preparation(file):
     for index in x_test_internal.index:
         pkis[index] = data.iloc[index]['pKi']
     max_pki_index = max(pkis, key=pkis.get)
-    return x_train_internal, x_test_internal, y_train_internal, y_test_internal, x_test_external, y_test_external, max_pki_index
+    return data, x_train_internal, x_test_internal, y_train_internal, y_test_internal, x_test_external, y_test_external, max_pki_index
 
 
 # In[147]:
@@ -200,6 +189,99 @@ def active_learning(x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_t
     return results, iteration_of_max_pki
 
 
+# In[223]:
+
+
+def search_of_max_pki(dataset, method):
+    
+    data, x_train_in, x_test_in, y_train_in, y_test_in, x_test_ex, y_test_ex, _ = data_preparation(dataset)
+    max_pki_index = data[['pKi']].idxmax()[0]
+    max_pki = data[['pKi']].max()[0]
+    
+    random_point = random.choice(list(x_test_in.index))
+    if max_pki_index in y_test_ex.index:
+        # x_test_ex, y_test_ex = x_test_ex.append(x_test_in.loc[random_point]), y_test_ex.append(x_test_in.loc[random_point])       
+        x_test_in, y_test_in = x_test_in.append(x_test_ex.loc[max_pki_index]), y_test_in.append(y_test_ex.loc[max_pki_index])
+        # x_test_ex, y_test_ex = x_test_ex.drop(max_pki_index), y_test_ex.drop(max_pki_index)
+        x_test_in, y_test_in = x_test_in.drop(random_point), y_test_in.drop(random_point)
+        
+    elif max_pki_index in y_train_in.index:
+        x_test_in, y_test_in = x_test_in.append(x_train_in.loc[max_pki_index]), y_test_in.append(y_train_in.loc[max_pki_index])
+        x_train_in, y_train_in = x_train_in.append(x_test_in.loc[random_point]), y_train_in.append(y_test_in.loc[random_point])              
+        x_train_in, y_train_in = x_train_in.drop(max_pki_index), y_train_in.drop(max_pki_index)
+        x_test_in, y_test_in = x_test_in.drop(random_point), y_test_in.drop(random_point)        
+    
+ 
+    while True:
+        rfc = RandomForestClassifier(random_state=42, n_estimators=500, max_features='log2', n_jobs=20)
+        rfc.fit(x_train_in.loc[:, ].to_numpy(), y_train_in['activity'].values.tolist())
+        classes = set(y_train_in['activity'].values.tolist())
+        
+        probs = rfc.predict_proba(x_test_in.loc[:, ].to_numpy())
+        probs_difference, prob_of_label_1 = [], []
+        for n, prob in enumerate(probs):
+            try:
+                probs_difference.append([x_test_in.index[n], abs(prob[0]-prob[1])])
+                prob_of_label_1.append([x_test_in.index[n], prob[1]])
+            except IndexError:
+                probs_difference.append([x_test_in.index[n], 1])
+                if 1 in classes:
+                    prob_of_label_1.append([x_test_in.index[n], 1]) 
+                else:
+                    prob_of_label_1.append([x_test_in.index[n], 0])
+                
+        least_sure = [x[0] for x in sorted(probs_difference, key=lambda x: x[1], reverse=False)][:5]
+        most_sure = [x[0] for x in sorted(prob_of_label_1, key=lambda x: x[1], reverse=True)][:5]
+
+        if method == 'exploration':
+            adding_points = least_sure
+        elif method == 'exploitation':
+            adding_points = most_sure
+        else:
+            try:
+                adding_points = random.sample(list(x_test_in.index), 5)
+            except ValueError:
+                adding_points = list(x_test_in.index)
+                
+        for point in adding_points:
+            x_train_in, y_train_in = x_train_in.append(x_test_in.loc[point]), y_train_in.append(y_test_in.loc[point])
+            x_test_in, y_test_in = x_test_in.drop(point), y_test_in.drop(point)
+
+        if max_pki_index in adding_points:
+            iteration_of_max_pki = (len(y_train_in)-10)//5
+            break
+
+    return iteration_of_max_pki, max_pki
+
+
+# In[216]:
+
+
+best_data_search_of_max_pki = defaultdict(dict)
+for dataset in tqdm(best_ba):
+    for i in tqdm(range(10)): 
+        result_for_iteration = dict()
+        for method in tqdm(['exploration', 'exploitation', 'random']):        
+            result_for_iteration[method] = search_of_max_pki(dataset,method)
+        best_data_search_of_max_pki[dataset][i] = result_for_iteration
+    with open ('best_data_search_of_max_pki.pickle', 'wb') as f:
+        pickle.dump(best_data_search_of_max_pki, f)
+
+
+# In[224]:
+
+
+worst_data_search_of_max_pki = defaultdict(dict)
+for dataset in tqdm(worst_ba):
+    for i in tqdm(range(10)): 
+        result_for_iteration = dict()
+        for method in tqdm(['exploration', 'exploitation', 'random']):        
+            result_for_iteration[method] = search_of_max_pki(dataset,method)
+        worst_data_search_of_max_pki[dataset][i] = result_for_iteration
+    with open ('worst_data_search_of_max_pki.pickle', 'wb') as f:
+        pickle.dump(worst_data_search_of_max_pki, f)
+
+
 # In[113]:
 
 
@@ -215,10 +297,10 @@ for dataset in tqdm(best_ba):
         pickle.dump(results_for_best, f)
 
 
-# In[ ]:
+# In[150]:
 
 
-#results_for_worst = defaultdict(dict)
+results_for_worst = defaultdict(dict)
 for dataset in tqdm(worst_ba):
     for method in tqdm(['exploration', 'exploitation', 'random']):
         result_for_iteration = []
@@ -228,3 +310,4 @@ for dataset in tqdm(worst_ba):
         results_for_worst[dataset][method] = result_for_iteration
     with open ('results_for_worst.pickle', 'wb') as f:
         pickle.dump(results_for_worst, f)
+
